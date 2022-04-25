@@ -6,9 +6,9 @@ use cosmwasm_std::{
 use cw2::set_contract_version;
 
 use crate::error::ContractError;
-use crate::msg::{InstantiateMsg, QueryMsg};
+use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::response::DepositedResponse;
-use crate::state::{ContractState, Deposits, CONTRACT_STATE, DEPOSITS};
+use crate::state::{ContractState, Deposit, CONTRACT_STATE, DEPOSITS};
 
 // version info for migration info
 const CONTRACT_NAME: &str = "crates.io:counter";
@@ -35,42 +35,70 @@ pub fn instantiate(
         .add_attribute("Asset Name", msg.asset_name))
 }
 
-// #[cfg_attr(not(feature = "library"), entry_point)]
-// pub fn execute(
-//     deps: DepsMut,
-//     _env: Env,
-//     info: MessageInfo,
-//     msg: ExecuteMsg,
-// ) -> Result<Response, ContractError> {
-//     match msg {
-//         ExecuteMsg::Deposit {} => try_increment(deps),
-//         ExecuteMsg::ReBalance {} => try_reset(deps, info, count),
-//         ExecuteMsg::Withdraw {} => try_reset(deps, info, count),
-//     }
-// }
+#[cfg_attr(not(feature = "library"), entry_point)]
+pub fn execute(
+    deps: DepsMut,
+    _env: Env,
+    info: MessageInfo,
+    msg: ExecuteMsg,
+) -> Result<Response, ContractError> {
+    match msg {
+        ExecuteMsg::Deposit {} => try_deposit(deps, info),
+        ExecuteMsg::ReBalance {} => try_re_balance(deps, info),
+        ExecuteMsg::Withdraw { amount } => try_withdraw(deps, info, amount),
+    }
+}
 
-// pub fn try_increment(deps: DepsMut) -> Result<Response, ContractError> {
-//     STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
-//         state.count += 1;
-//         Ok(state)
-//     })?;
+pub fn try_deposit(deps: DepsMut, info: MessageInfo) -> Result<Response, ContractError> {
+    DEPOSITS.update(
+        deps.storage,
+        &info.sender,
+        |deposits| -> Result<_, ContractError> {
+            let value = deposits.unwrap_or(Deposit {
+                amount: Uint128::zero(),
+            });
+            match value.amount.checked_add(Uint128::new(10)) {
+                Ok(new_value) => Ok(Deposit { amount: new_value }),
+                Err(_) => Err(ContractError::Overflow {}),
+            }
+        },
+    )?;
+    Ok(Response::new()
+        .add_attribute("method", "deposit")
+        .add_attribute("sender", info.sender))
+}
 
-//     Ok(Response::new().add_attribute("method", "try_increment"))
-// }
-// pub fn try_reset(deps: DepsMut, info: MessageInfo, count: i32) -> Result<Response, ContractError> {
-//     STATE.update(deps.storage, |mut state| -> Result<_, ContractError> {
-//         if info.sender != state.owner {
-//             return Err(ContractError::Unauthorized {});
-//         }
-//         state.count = count;
-//         Ok(state)
-//     })?;
-//     Ok(Response::new().add_attribute("method", "reset"))
-// }
-// update the sender's stake
-//   let new_stake = STAKE.update(deps.storage, &sender, |stake| -> StdResult<_> {
-//     Ok(stake.unwrap_or_default() + amount)
-// })?;
+pub fn try_re_balance(_deps: DepsMut, _info: MessageInfo) -> Result<Response, ContractError> {
+    Ok(Response::new().add_attribute("method", "try_re_balance"))
+}
+
+pub fn try_withdraw(
+    deps: DepsMut,
+    info: MessageInfo,
+    amount_to_withdraw: Uint128,
+) -> Result<Response, ContractError> {
+    DEPOSITS.update(
+        deps.storage,
+        &info.sender,
+        |deposits| -> Result<Deposit, ContractError> {
+            let deposit = deposits.unwrap_or(Deposit {
+                amount: Uint128::zero(),
+            });
+            if deposit.amount.lt(&amount_to_withdraw) {
+                return Err(ContractError::InsufficientFunds {
+                    amount: amount_to_withdraw,
+                    balance: deposit.amount,
+                });
+            } else {
+                match deposit.amount.checked_sub(amount_to_withdraw) {
+                    Ok(new_value) => Ok(Deposit { amount: new_value }),
+                    Err(_) => Err(ContractError::Overflow {}),
+                }
+            }
+        },
+    )?;
+    Ok(Response::new().add_attribute("method", "reset"))
+}
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
@@ -84,7 +112,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 
 fn query_deposit(deps: Deps, user_addr: Addr) -> StdResult<DepositedResponse> {
     let user_data = DEPOSITS.key(&user_addr);
-    let result = user_data.may_load(deps.storage)?.unwrap_or(Deposits {
+    let result = user_data.may_load(deps.storage)?.unwrap_or(Deposit {
         amount: Uint128::zero(),
     });
 
